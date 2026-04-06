@@ -316,16 +316,22 @@ sensor_messages.json — ~800 sensor messages (readings, alerts, recoveries)
 
 ---
 
-## Design Decisions
+## Design Decisions & Trade-offs
 
-### Storage: PostgreSQL
+### Storage: PostgreSQL vs. alternatives
 
-PostgreSQL was chosen over SQLite, TimescaleDB, and flat-file alternatives because:
-- `date_trunc` and `AT TIME ZONE` make device-local daily aggregates trivial to express in SQL
-- Relational joins handle company-scoped alert queries cleanly
-- At ~800 messages across 10 devices, operational simplicity matters more than write throughput
+| Option | Why considered | Why rejected |
+|---|---|---|
+| **SQLite** | Zero setup, single file, great for small datasets | No native `AT TIME ZONE` — device-local daily grouping would require pulling all rows into Go and grouping in application code |
+| **TimescaleDB** | Built for time-series, excellent compression and retention | Over-engineered for ~800 messages; adds operational complexity (extension, chunking config) with no benefit at this scale |
+| **Flat file / in-memory** | Simplest possible implementation | No query language; stats and filtering require full scans with custom code |
+| **PostgreSQL** ✓ | `date_trunc` + `AT TIME ZONE` make device-local daily stats a one-liner; relational joins handle company scoping cleanly; `ON CONFLICT DO NOTHING` gives safe idempotent inserts | Requires a running server (Docker adds a setup step vs. SQLite) |
 
-### Schema: 4 tables
+The deciding factor was the stats endpoint. `date_trunc('day', to_timestamp(ts/1000.0) AT TIME ZONE device_tz)` is a single SQL expression. In SQLite, the equivalent requires fetching every row, converting timestamps in Go, and grouping manually — a significant amount of logic that PostgreSQL handles in the query itself.
+
+---
+
+### Schema: 4-table design
 
 ```
 devices        — device metadata and alert thresholds (JSONB)
@@ -334,49 +340,69 @@ reading_inputs — one row per sensor value; motor_status stored here as 0.0/1.0
 events         — device-sent and pipeline-derived alerts/recoveries
 ```
 
-`motor_status` lives in `reading_inputs` rather than a separate table. It's just another named input — querying it is a `WHERE input_name = 'motor_status'` filter, and this avoids an extra join on every "what was the device doing at time T?" query.
+**Readings split from reading_inputs** — Each device type reports a different set of inputs (elevators: `current`, `frequency`, `motor_status`; compressors: `current`, `temperature`, `pressure`). A wide table with one column per input type would have many NULLs per row and require a schema migration whenever a new device type is added. One row per input keeps the schema device-agnostic and makes `AVG/MIN/MAX GROUP BY input_name` trivial.
 
-Threshold breach events are written as rows in `events` (with `threshold`, `reading_value`, `reading_name` populated) rather than flags on `reading_inputs`. This keeps raw data separate from derived state, and means threshold rules can be re-evaluated by dropping and re-inserting event rows without touching the readings.
+**motor_status in reading_inputs, not its own table** — `motor_status` arrives inside the same message as numeric readings. Storing it as `0.0`/`1.0` alongside other inputs avoids an extra join on queries like "what was the motor doing at time T?". A CHECK constraint enforces only `0` and `1` are valid for that input name.
 
-### Deduplication: two layers
-
-- **Application layer**: an in-memory `map[string]struct{}` in the validator keyed on `device_id:timestamp_ms:message_type` prevents redundant DB writes during a single ingest run.
-- **Database layer**: unique indexes on `readings(device_id, timestamp_ms)` and `events(device_id, timestamp_ms, message_type)` provide a hard guarantee if the pipeline is ever run again. A conflict is treated as a no-op.
-
-### Timestamps: epoch ms in storage, RFC3339 at the API boundary
-
-All timestamps are stored as `BIGINT` epoch milliseconds in UTC. Conversion to device-local time happens only at the API layer using Go's `time.LoadLocation` with the device's IANA timezone string. This avoids PostgreSQL timezone-aware column edge cases and keeps UTC as the single source of truth.
-
-### Auth: static token map
-
-`GET /alerts` is scoped to a company via `Authorization: Bearer <token>`. The token-to-company mapping is loaded from the `COMPANY_TOKENS` environment variable at startup. This demonstrates multi-tenant scoping without requiring a user/auth database. Replacing it with JWT validation is a one-function change in `middleware.go`.
-
-### Ingestion: one-shot, skip if data exists
-
-The pipeline runs once at startup and populates the database from the JSON files. On subsequent restarts, a `SELECT EXISTS(SELECT 1 FROM readings)` check skips ingestion entirely — avoiding redundant parsing and insert attempts on every deploy.
+**Threshold events in events, not flags on reading_inputs** — Threshold breaches are derived state computed by the pipeline, not raw data sent by the device. Keeping them separate means: (1) raw readings stay immutable — if a threshold config changes, derived events can be dropped and recomputed without touching `readings`; (2) device-sent alerts (`door_fault`) and pipeline-derived ones (`current_low`) are returned from a single query in the same shape. The nullable `threshold`/`reading_value`/`reading_name` columns are only populated for derived events.
 
 ---
 
-### Pagination
+### Timestamps: BIGINT epoch ms vs. TIMESTAMPTZ
 
-`GET /devices/{id}/readings` uses keyset pagination on `timestamp_ms`. Clients pass `?limit=N` (default 100, max 500) and use the `next_cursor` from each response as `?after=` for the next page. This is more efficient than `OFFSET` pagination because it uses the existing index directly — no full table scan to skip rows.
+All timestamps are stored as `BIGINT` epoch milliseconds in UTC. Timezone conversion happens only at the API layer via Go's `time.LoadLocation`.
 
-### Out-of-order message handling
+The alternative — `TIMESTAMPTZ` — sounds more natural but creates a subtle problem: `AT TIME ZONE` in PostgreSQL returns `TIMESTAMP WITHOUT TIME ZONE`, which means the Go scanner receives a value with no timezone attached. You end up managing timezone context in two places. BIGINT + a single `time.UnixMilli(ms).In(loc)` call in Go is simpler, keeps UTC as the unambiguous source of truth, and avoids PostgreSQL timezone-aware column edge cases entirely.
 
-The deduplication key `(device_id, timestamp_ms)` makes the pipeline inherently order-independent. A reading that arrives late with a unique timestamp is stored correctly regardless of insertion order. An exact duplicate (same device, same timestamp) is silently dropped via `ON CONFLICT DO NOTHING`. The only edge case is a late-arriving reading at an already-stored timestamp but with different values — this is treated as a duplicate and dropped. In practice this signals a device firmware issue (two distinct readings at the same millisecond), and the current behaviour is correct.
+Trade-off: epoch ms is less human-readable in the DB. Any direct SQL inspection requires `to_timestamp(ts / 1000.0)` to see meaningful dates.
+
+---
+
+### Deduplication: two layers
+
+- **Application layer**: an in-memory `map[string]struct{}` keyed on `device_id:timestamp_ms:message_type` prevents redundant DB writes within a single ingest run — no DB round-trip required.
+- **Database layer**: unique indexes on `readings(device_id, timestamp_ms)` and `events(device_id, timestamp_ms, message_type)` with `ON CONFLICT DO NOTHING` guarantee correctness across restarts.
+
+The app-layer map handles the common case cheaply. The DB index is the safety net — if the pipeline is restarted mid-run or run twice, the DB rejects duplicates without any application code change. Both layers are needed: the map avoids redundant I/O in the hot path; the index is the authoritative guarantee.
+
+---
+
+### Pagination: keyset vs. OFFSET
+
+`GET /devices/{id}/readings` uses keyset pagination on `timestamp_ms` (`?after=<cursor>`).
+
+`OFFSET N` scans and discards the first N rows every time. At 10,000 readings, page 100 with `OFFSET 9900` still reads 9,900 rows to find the start. Keyset pagination uses the index on `(device_id, timestamp_ms)` to jump directly to the cursor position — no rows are discarded.
+
+Trade-off: keyset does not support random page access ("jump to page 5"). For a sensor timeline this is not a problem — clients walk forward through time chronologically, which is exactly the access pattern keyset is optimised for.
+
+---
+
+### Auth: static token map
+
+The `GET /alerts` endpoint is scoped to a company via `Authorization: Bearer <token>`. The token-to-company mapping is loaded from `COMPANY_TOKENS` at startup.
+
+This demonstrates multi-tenant query scoping without requiring a user/auth database. The trade-off is operability: tokens cannot be rotated without a restart and carry no expiry. The upgrade path is JWT tokens (stateless, carry expiry and company claims) and eventually per-device certificates so that spoofed `device_id` values in ingested data can be rejected at the ingestion boundary.
+
+---
+
+### Ingestion: one-shot with skip-if-exists
+
+The pipeline runs once at startup. A `SELECT EXISTS(SELECT 1 FROM readings)` check skips ingestion on subsequent restarts, avoiding redundant parsing and insert attempts on every deploy.
+
+Trade-off: updating `sensor_messages.json` after the initial run has no effect without truncating the tables manually. The idempotent `ON CONFLICT DO NOTHING` inserts mean a re-run would be safe — a `--force-reingest` flag is the natural next step.
 
 ---
 
 ## What Would Be Improved With More Time
 
-- **Anomaly flagging**: the current threshold system is static — a fixed `_high`/`_low` per device. A more useful signal is statistical: flagging readings that are within the valid range but significantly outside the device's own recent baseline (e.g. more than 2 standard deviations from a rolling 24-hour window). PostgreSQL window functions (`AVG() OVER`, `STDDEV() OVER`) make this feasible as a query-time enrichment, or as a background job that writes anomaly events without touching the raw readings.
+- **Anomaly flagging**: static `_high`/`_low` thresholds per device miss gradual drift. A rolling statistical baseline (e.g. flag readings >2 standard deviations from a 24-hour window) would be more useful. PostgreSQL window functions (`AVG() OVER`, `STDDEV() OVER`) make this feasible as a background job that writes anomaly events without touching raw readings.
 
-- **Authentication**: the current Bearer token is a static string loaded from an environment variable. Production improvements in priority order: JWT tokens (stateless, carry expiry and company claims without a DB lookup); token rotation and revocation (a `tokens` table with `expires_at`); per-device auth (each device presents a certificate or rotating API key so rogue data cannot be injected by spoofing a `device_id`).
+- **Authentication**: JWT tokens (stateless, carry expiry and company claims); token rotation and revocation via a `tokens` table with `expires_at`; per-device certificates so rogue data cannot be injected by spoofing a `device_id`.
 
-- **Rate limiting**: no rate limiting exists today. A single client could exhaust the DB connection pool under sustained load. The chi middleware ecosystem includes `httprate` (token bucket, a few lines to wire in). For the authenticated endpoint, per-token rate limiting is the right boundary.
+- **Rate limiting**: the chi middleware ecosystem includes `httprate` (token bucket, a few lines to wire in). Per-token limiting is the right boundary for the authenticated endpoint.
 
-- **Re-ingestion mechanism**: if `sensor_messages.json` is updated, the only path today is truncating the tables and restarting. A `--force-reingest` CLI flag or a `POST /admin/ingest` endpoint would address this without manual DB intervention.
+- **Re-ingestion**: a `--force-reingest` CLI flag or `POST /admin/ingest` endpoint to handle updates to `sensor_messages.json` without manual DB truncation.
 
-- **Threshold severity**: pipeline-generated threshold events are always stored as `"warning"` because severity isn't part of the device threshold config. Adding a `severity` field per threshold (e.g. `current_high_severity: "critical"`) would fix this.
+- **Threshold severity**: pipeline-generated threshold events are always stored as `"warning"`. Adding a `severity` field per threshold in `devices.json` (e.g. `current_high_severity: "critical"`) would fix this without a schema change.
 
-- **Single-node**: no explicit connection pool tuning or read replicas. `database/sql`'s defaults are fine at this scale but would need configuration (max open/idle connections, statement timeout) under real load.
+- **Connection pool tuning**: `database/sql` defaults are fine at this scale but need `SetMaxOpenConns`, `SetMaxIdleConns`, and a statement timeout under real load.
