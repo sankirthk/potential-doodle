@@ -19,3 +19,5 @@ vendor/
 
 # OS
 .DS_Store
+
+integration.md
