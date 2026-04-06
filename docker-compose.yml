@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: knaq
+      POSTGRES_PASSWORD: knaq
+      POSTGRES_DB: knaq
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knaq -d knaq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8000:8080"
+    environment:
+      DATABASE_URL: postgres://knaq:knaq@db:5432/knaq?sslmode=disable
+      PORT: 8080
+      COMPANY_TOKENS: brookfield-token:Brookfield Properties,hines-token:Hines,mitsui-token:Mitsui Fudosan
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

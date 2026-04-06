@@ -1,0 +1,21 @@
+# Spec and project docs
+docs/
+CLAUDE.md
+
+# IDE
+.idea/
+
+# Claude Code
+.claude/
+
+# Build output
+knaq-server
+
+# Environment
+.env
+
+# Go
+vendor/
+
+# OS
+.DS_Store

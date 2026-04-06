@@ -1,0 +1,218 @@
+[
+  {
+    "device_id": "ELV-001",
+    "type": "elevator",
+    "company": "Brookfield Properties",
+    "name": "Main Lobby Elevator #1",
+    "location": "One World Trade Center, New York, NY",
+    "timezone": "America/New_York",
+    "floor_count": 42,
+    "installed_date": "2023-06-15",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 180,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55
+    }
+  },
+  {
+    "device_id": "ELV-002",
+    "type": "elevator",
+    "company": "Brookfield Properties",
+    "name": "Service Elevator B",
+    "location": "Willis Tower, Chicago, IL",
+    "timezone": "America/Chicago",
+    "floor_count": 28,
+    "installed_date": "2023-09-01",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 180,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55
+    }
+  },
+  {
+    "device_id": "ELV-003",
+    "type": "elevator",
+    "company": "Hines",
+    "name": "Parking Garage Elevator",
+    "location": "Salesforce Tower, San Francisco, CA",
+    "timezone": "America/Los_Angeles",
+    "floor_count": 12,
+    "installed_date": "2024-01-20",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 150,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55
+    }
+  },
+  {
+    "device_id": "ELV-004",
+    "type": "elevator",
+    "company": "Hines",
+    "name": "Freight Elevator #1",
+    "location": "Denver Tech Center, Denver, CO",
+    "timezone": "America/Denver",
+    "floor_count": 8,
+    "installed_date": "2024-08-01",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 200,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55
+    }
+  },
+  {
+    "device_id": "ESC-001",
+    "type": "escalator",
+    "company": "Mitsui Fudosan",
+    "name": "Main Concourse Escalator East",
+    "location": "Tokyo Station, Tokyo, Japan",
+    "timezone": "Asia/Tokyo",
+    "installed_date": "2024-02-15",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 120,
+      "current_low": 3,
+      "frequency_high": 55,
+      "frequency_low": 48
+    }
+  },
+  {
+    "device_id": "ESC-002",
+    "type": "escalator",
+    "company": "Brookfield Properties",
+    "name": "Shopping Mall Escalator #2",
+    "location": "Brookfield Place, New York, NY",
+    "timezone": "America/New_York",
+    "installed_date": "2024-05-20",
+    "reading_types": [
+      "current",
+      "frequency",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 120,
+      "current_low": 3,
+      "frequency_high": 55,
+      "frequency_low": 48
+    }
+  },
+  {
+    "device_id": "CMP-001",
+    "type": "compressor",
+    "company": "Brookfield Properties",
+    "name": "HVAC Compressor Unit A",
+    "location": "One World Trade Center, New York, NY",
+    "timezone": "America/New_York",
+    "installed_date": "2023-06-15",
+    "reading_types": [
+      "current",
+      "frequency",
+      "temperature",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 95,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55,
+      "temperature_high": 130,
+      "temperature_low": -5
+    }
+  },
+  {
+    "device_id": "CMP-002",
+    "type": "compressor",
+    "company": "Hines",
+    "name": "Chiller Plant Compressor #3",
+    "location": "Toyota HQ, Plano, TX",
+    "timezone": "America/Chicago",
+    "installed_date": "2024-03-10",
+    "reading_types": [
+      "current",
+      "frequency",
+      "temperature",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 100,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55,
+      "temperature_high": 140,
+      "temperature_low": -5
+    }
+  },
+  {
+    "device_id": "CMP-003",
+    "type": "compressor",
+    "company": "Mitsui Fudosan",
+    "name": "Backup Compressor Unit",
+    "location": "Canary Wharf Tower, London, UK",
+    "timezone": "Europe/London",
+    "installed_date": "2024-07-01",
+    "reading_types": [
+      "current",
+      "frequency",
+      "temperature",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 90,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55,
+      "temperature_high": 135,
+      "temperature_low": -5
+    }
+  },
+  {
+    "device_id": "CMP-004",
+    "type": "compressor",
+    "company": "Hines",
+    "name": "Rooftop Compressor Unit C",
+    "location": "Salesforce Tower, San Francisco, CA",
+    "timezone": "America/Los_Angeles",
+    "installed_date": "2023-11-10",
+    "reading_types": [
+      "current",
+      "frequency",
+      "temperature",
+      "motor_status"
+    ],
+    "alert_thresholds": {
+      "current_high": 95,
+      "current_low": 5,
+      "frequency_high": 65,
+      "frequency_low": 55,
+      "temperature_high": 130,
+      "temperature_low": -5
+    }
+  }
+]
