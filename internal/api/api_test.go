@@ -33,8 +33,21 @@ func (f *fakeStore) GetDevice(id string) (models.Device, error) {
 	return models.Device{}, nil
 }
 
-func (f *fakeStore) GetReadings(deviceID string, from, to int64) ([]models.Reading, error) {
-	return f.readings, nil
+func (f *fakeStore) GetReadings(deviceID string, from, to, after int64, limit int) ([]models.Reading, error) {
+	result := f.readings
+	if after > 0 {
+		filtered := result[:0]
+		for _, r := range result {
+			if r.TimestampMs > after {
+				filtered = append(filtered, r)
+			}
+		}
+		result = filtered
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func (f *fakeStore) GetStats(deviceID string) ([]models.StatsResponse, error) {
@@ -112,13 +125,13 @@ func TestGetReadings_OK(t *testing.T) {
 	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28")
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-	var resp []models.ReadingResponse
-	decodeJSON(t, rr, &resp)
-	require.Len(t, resp, 1)
-	assert.Equal(t, "ELV-001", resp[0].DeviceID)
-	assert.Len(t, resp[0].Inputs, 2)
-	assert.Equal(t, "current", resp[0].Inputs[0].Name)
-	assert.Equal(t, 58.94, resp[0].Inputs[0].Value)
+	var page models.ReadingsPage
+	decodeJSON(t, rr, &page)
+	require.Len(t, page.Data, 1)
+	assert.Equal(t, "ELV-001", page.Data[0].DeviceID)
+	assert.Len(t, page.Data[0].Inputs, 2)
+	assert.Equal(t, "current", page.Data[0].Inputs[0].Name)
+	assert.Equal(t, 58.94, page.Data[0].Inputs[0].Value)
 }
 
 func TestGetReadings_TimestampInDeviceLocalTZ(t *testing.T) {
@@ -135,11 +148,79 @@ func TestGetReadings_TimestampInDeviceLocalTZ(t *testing.T) {
 
 	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28")
 
-	var resp []models.ReadingResponse
-	decodeJSON(t, rr, &resp)
-	require.Len(t, resp, 1)
+	var page models.ReadingsPage
+	decodeJSON(t, rr, &page)
+	require.Len(t, page.Data, 1)
 	// Must contain the NY offset (-05:00 in February)
-	assert.Contains(t, resp[0].Timestamp, "-05:00")
+	assert.Contains(t, page.Data[0].Timestamp, "-05:00")
+}
+
+func TestGetReadings_Pagination_HasMore(t *testing.T) {
+	// 3 readings, limit=2 → has_more=true, next_cursor set
+	store := &fakeStore{
+		readings: []models.Reading{
+			{DeviceID: "ELV-001", TimestampMs: 1000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 50}}},
+			{DeviceID: "ELV-001", TimestampMs: 2000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 60}}},
+			{DeviceID: "ELV-001", TimestampMs: 3000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 70}}},
+		},
+	}
+	h := newRouter(store, map[string]models.Device{"ELV-001": elvDevice()})
+
+	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=2")
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	var page models.ReadingsPage
+	decodeJSON(t, rr, &page)
+	assert.Len(t, page.Data, 2)
+	assert.True(t, page.HasMore)
+	require.NotNil(t, page.NextCursor)
+	assert.Equal(t, int64(2000), *page.NextCursor)
+}
+
+func TestGetReadings_Pagination_LastPage(t *testing.T) {
+	// 2 readings, limit=10 → has_more=false, no cursor
+	store := &fakeStore{
+		readings: []models.Reading{
+			{DeviceID: "ELV-001", TimestampMs: 1000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 50}}},
+			{DeviceID: "ELV-001", TimestampMs: 2000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 60}}},
+		},
+	}
+	h := newRouter(store, map[string]models.Device{"ELV-001": elvDevice()})
+
+	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=10")
+
+	var page models.ReadingsPage
+	decodeJSON(t, rr, &page)
+	assert.Len(t, page.Data, 2)
+	assert.False(t, page.HasMore)
+	assert.Nil(t, page.NextCursor)
+}
+
+func TestGetReadings_Pagination_AfterCursor(t *testing.T) {
+	store := &fakeStore{
+		readings: []models.Reading{
+			{DeviceID: "ELV-001", TimestampMs: 1000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 50}}},
+			{DeviceID: "ELV-001", TimestampMs: 2000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 60}}},
+			{DeviceID: "ELV-001", TimestampMs: 3000, Inputs: []models.ReadingInput{{InputName: "current", InputValue: 70}}},
+		},
+	}
+	h := newRouter(store, map[string]models.Device{"ELV-001": elvDevice()})
+
+	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=2&after=1000")
+
+	var page models.ReadingsPage
+	decodeJSON(t, rr, &page)
+	// after=1000ms means ts > 1000ms, so we get ts=2000 and ts=3000
+	require.Len(t, page.Data, 2)
+	assert.False(t, page.HasMore)
+}
+
+func TestGetReadings_InvalidLimit_400(t *testing.T) {
+	h := newRouter(&fakeStore{}, map[string]models.Device{"ELV-001": elvDevice()})
+
+	rr := get(t, h, "/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=abc")
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
 func TestGetReadings_MissingStart_400(t *testing.T) {

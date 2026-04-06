@@ -103,7 +103,7 @@ All endpoints return `application/json`. Timestamps in responses use RFC3339 for
 
 ### GET /devices/{id}/readings
 
-Returns all sensor readings for a device within a time range.
+Returns sensor readings for a device within a time range, paginated.
 
 **Query params**
 
@@ -111,31 +111,43 @@ Returns all sensor readings for a device within a time range.
 |---|---|---|---|
 | `start` | Yes | RFC3339 or `YYYY-MM-DD` | Start of range, interpreted in device's local timezone |
 | `end` | Yes | RFC3339 or `YYYY-MM-DD` | End of range, interpreted in device's local timezone |
+| `limit` | No | integer (1–500) | Page size. Default: 100 |
+| `after` | No | epoch ms integer | Cursor from previous page's `next_cursor`. Returns readings with `timestamp_ms > after` |
 
 **Example**
 
 ```bash
-curl "http://localhost:8080/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28"
+# First page
+curl "http://localhost:8080/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=2"
+
+# Next page using cursor from response
+curl "http://localhost:8080/devices/ELV-001/readings?start=2026-02-01&end=2026-02-28&limit=2&after=1770737458000"
 ```
 
 ```json
-[
-  {
-    "device_id": "ELV-001",
-    "timestamp": "2026-02-10T01:45:43-05:00",
-    "inputs": [
-      { "name": "current",   "value": 123.69 },
-      { "name": "frequency", "value": 60.18  }
-    ]
-  }
-]
+{
+  "data": [
+    {
+      "device_id": "ELV-001",
+      "timestamp": "2026-02-10T01:45:43-05:00",
+      "inputs": [
+        { "name": "current",   "value": 123.69 },
+        { "name": "frequency", "value": 60.18  }
+      ]
+    }
+  ],
+  "next_cursor": 1770737458000,
+  "has_more": true
+}
 ```
+
+`next_cursor` is the `timestamp_ms` of the last returned reading. Pass it as `?after=` to fetch the next page. It is omitted when `has_more` is `false`.
 
 **Errors**
 
 | Status | Reason |
 |---|---|
-| `400` | Missing or unparseable `start` / `end` |
+| `400` | Missing or unparseable `start` / `end`, or invalid `limit` / `after` |
 | `404` | Unknown device ID |
 
 ---
@@ -345,9 +357,26 @@ The pipeline runs once at startup and populates the database from the JSON files
 
 ---
 
-## Known Limitations
+### Pagination
 
-- **No re-ingestion mechanism**: if `sensor_messages.json` is updated, you need to truncate the tables and restart. A `POST /ingest` endpoint or a `--force-reingest` flag would address this.
-- **Threshold severity is always `warning`**: pipeline-generated threshold events don't have severity info in the device config, so all are stored as `"warning"`. A `severity` field on device thresholds would fix this.
-- **No pagination on readings**: `GET /devices/{id}/readings` returns all matching rows. At production scale this would need `limit`/`offset` or cursor-based pagination.
-- **Single-node**: no connection pooling configuration, no read replicas. `database/sql`'s default pool is fine for this scale.
+`GET /devices/{id}/readings` uses keyset pagination on `timestamp_ms`. Clients pass `?limit=N` (default 100, max 500) and use the `next_cursor` from each response as `?after=` for the next page. This is more efficient than `OFFSET` pagination because it uses the existing index directly — no full table scan to skip rows.
+
+### Out-of-order message handling
+
+The deduplication key `(device_id, timestamp_ms)` makes the pipeline inherently order-independent. A reading that arrives late with a unique timestamp is stored correctly regardless of insertion order. An exact duplicate (same device, same timestamp) is silently dropped via `ON CONFLICT DO NOTHING`. The only edge case is a late-arriving reading at an already-stored timestamp but with different values — this is treated as a duplicate and dropped. In practice this signals a device firmware issue (two distinct readings at the same millisecond), and the current behaviour is correct.
+
+---
+
+## What Would Be Improved With More Time
+
+- **Anomaly flagging**: the current threshold system is static — a fixed `_high`/`_low` per device. A more useful signal is statistical: flagging readings that are within the valid range but significantly outside the device's own recent baseline (e.g. more than 2 standard deviations from a rolling 24-hour window). PostgreSQL window functions (`AVG() OVER`, `STDDEV() OVER`) make this feasible as a query-time enrichment, or as a background job that writes anomaly events without touching the raw readings.
+
+- **Authentication**: the current Bearer token is a static string loaded from an environment variable. Production improvements in priority order: JWT tokens (stateless, carry expiry and company claims without a DB lookup); token rotation and revocation (a `tokens` table with `expires_at`); per-device auth (each device presents a certificate or rotating API key so rogue data cannot be injected by spoofing a `device_id`).
+
+- **Rate limiting**: no rate limiting exists today. A single client could exhaust the DB connection pool under sustained load. The chi middleware ecosystem includes `httprate` (token bucket, a few lines to wire in). For the authenticated endpoint, per-token rate limiting is the right boundary.
+
+- **Re-ingestion mechanism**: if `sensor_messages.json` is updated, the only path today is truncating the tables and restarting. A `--force-reingest` CLI flag or a `POST /admin/ingest` endpoint would address this without manual DB intervention.
+
+- **Threshold severity**: pipeline-generated threshold events are always stored as `"warning"` because severity isn't part of the device threshold config. Adding a `severity` field per threshold (e.g. `current_high_severity: "critical"`) would fix this.
+
+- **Single-node**: no explicit connection pool tuning or read replicas. `database/sql`'s defaults are fine at this scale but would need configuration (max open/idle connections, statement timeout) under real load.

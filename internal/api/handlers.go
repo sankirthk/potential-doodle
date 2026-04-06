@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,7 +18,12 @@ type handler struct {
 	tokens  map[string]string
 }
 
-// GET /devices/{id}/readings?start=<RFC3339>&end=<RFC3339>
+const (
+	defaultPageSize = 100
+	maxPageSize     = 500
+)
+
+// GET /devices/{id}/readings?start=<RFC3339>&end=<RFC3339>&limit=<N>&after=<cursor>
 func (h *handler) getReadings(w http.ResponseWriter, r *http.Request) {
 	device, ok := h.lookupDevice(w, r)
 	if !ok {
@@ -29,26 +35,43 @@ func (h *handler) getReadings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	readings, err := h.store.GetReadings(device.DeviceID, from, to)
+	limit, after, ok := parsePagination(w, r)
+	if !ok {
+		return
+	}
+
+	// Fetch limit+1 to detect whether another page exists.
+	readings, err := h.store.GetReadings(device.DeviceID, from, to, after, limit+1)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch readings")
 		return
 	}
 
+	hasMore := len(readings) > limit
+	if hasMore {
+		readings = readings[:limit]
+	}
+
 	loc, _ := time.LoadLocation(device.Timezone)
-	resp := make([]models.ReadingResponse, 0, len(readings))
+	data := make([]models.ReadingResponse, 0, len(readings))
 	for _, rr := range readings {
 		inputs := make([]models.InputResponse, len(rr.Inputs))
 		for i, inp := range rr.Inputs {
 			inputs[i] = models.InputResponse{Name: inp.InputName, Value: inp.InputValue}
 		}
-		resp = append(resp, models.ReadingResponse{
+		data = append(data, models.ReadingResponse{
 			DeviceID:  rr.DeviceID,
 			Timestamp: msToLocalRFC3339(rr.TimestampMs, loc),
 			Inputs:    inputs,
 		})
 	}
-	writeJSON(w, http.StatusOK, resp)
+
+	page := models.ReadingsPage{Data: data, HasMore: hasMore}
+	if hasMore && len(readings) > 0 {
+		cursor := readings[len(readings)-1].TimestampMs
+		page.NextCursor = &cursor
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // GET /devices/{id}/stats
@@ -151,6 +174,35 @@ func parseTimeRange(w http.ResponseWriter, r *http.Request, timezone string) (fr
 	}
 
 	return start.UnixMilli(), end.UnixMilli(), true
+}
+
+// parsePagination parses optional ?limit= and ?after= query params.
+// limit defaults to defaultPageSize, capped at maxPageSize.
+// after is an epoch-ms cursor (0 means start from beginning).
+func parsePagination(w http.ResponseWriter, r *http.Request) (limit int, after int64, ok bool) {
+	limit = defaultPageSize
+	if s := r.URL.Query().Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return 0, 0, false
+		}
+		if n > maxPageSize {
+			n = maxPageSize
+		}
+		limit = n
+	}
+
+	if s := r.URL.Query().Get("after"); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "after must be a non-negative epoch ms integer")
+			return 0, 0, false
+		}
+		after = n
+	}
+
+	return limit, after, true
 }
 
 // parseLocalTime tries several common timestamp formats, interpreting the result

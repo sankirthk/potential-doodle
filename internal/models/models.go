@@ -65,11 +65,18 @@ type Event struct {
 
 // --- API response types ---
 
-// ReadingResponse is the JSON shape returned by GET /devices/{id}/readings.
+// ReadingResponse is the JSON shape for a single reading.
 type ReadingResponse struct {
 	DeviceID  string          `json:"device_id"`
 	Timestamp string          `json:"timestamp"` // RFC3339 with tz offset
 	Inputs    []InputResponse `json:"inputs"`
+}
+
+// ReadingsPage is the paginated response returned by GET /devices/{id}/readings.
+type ReadingsPage struct {
+	Data       []ReadingResponse `json:"data"`
+	NextCursor *int64            `json:"next_cursor,omitempty"` // timestamp_ms of last item; pass as ?after= for next page
+	HasMore    bool              `json:"has_more"`
 }
 
 // InputResponse is a single sensor input within a ReadingResponse.

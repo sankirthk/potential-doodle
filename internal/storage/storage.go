@@ -20,7 +20,7 @@ type Store interface {
 	InsertEvent(e models.Event) error
 
 	GetDevice(deviceID string) (models.Device, error)
-	GetReadings(deviceID string, from, to int64) ([]models.Reading, error)
+	GetReadings(deviceID string, from, to, after int64, limit int) ([]models.Reading, error)
 	GetStats(deviceID string) ([]models.StatsResponse, error)
 	GetDeviceEvents(deviceID, severity string) ([]models.Event, error)
 	GetCompanyEvents(company, severity string) ([]models.Event, error)
@@ -169,18 +169,26 @@ func (s *PostgresStore) GetDevice(deviceID string) (models.Device, error) {
 	return scanDevice(row)
 }
 
-// GetReadings returns all readings (with inputs) for a device in [from, to] epoch ms.
-func (s *PostgresStore) GetReadings(deviceID string, from, to int64) ([]models.Reading, error) {
+// GetReadings returns readings (with inputs) for a device in [from, to] epoch ms.
+// after is an exclusive cursor (0 means no cursor). limit controls page size;
+// pass limit+1 rows are fetched so the caller can detect has_more.
+func (s *PostgresStore) GetReadings(deviceID string, from, to, after int64, limit int) ([]models.Reading, error) {
 	rows, err := s.db.Query(
 		`SELECT r.id, r.device_id, r.timestamp_ms,
 		        ri.input_name, ri.input_value
-		 FROM readings r
+		 FROM (
+		     SELECT id, device_id, timestamp_ms
+		     FROM readings
+		     WHERE device_id = $1
+		       AND timestamp_ms >= $2
+		       AND timestamp_ms <= $3
+		       AND ($4::bigint = 0 OR timestamp_ms > $4::bigint)
+		     ORDER BY timestamp_ms
+		     LIMIT $5
+		 ) r
 		 JOIN reading_inputs ri ON ri.reading_id = r.id
-		 WHERE r.device_id = $1
-		   AND r.timestamp_ms >= $2
-		   AND r.timestamp_ms <= $3
 		 ORDER BY r.timestamp_ms, ri.id`,
-		deviceID, from, to,
+		deviceID, from, to, after, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query readings: %w", err)

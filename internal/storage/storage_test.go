@@ -107,7 +107,7 @@ func TestInsertReading_StoredCorrectly(t *testing.T) {
 	}
 	require.NoError(t, store.InsertReading(r))
 
-	readings, err := store.GetReadings("ELV-001", 0, 2_000_000)
+	readings, err := store.GetReadings("ELV-001", 0, 2_000_000, 0, 1000)
 	require.NoError(t, err)
 	require.Len(t, readings, 1)
 	assert.Equal(t, int64(1_000_000), readings[0].TimestampMs)
@@ -128,7 +128,7 @@ func TestInsertReading_DuplicateSilentlyIgnored(t *testing.T) {
 	require.NoError(t, store.InsertReading(r))
 	require.NoError(t, store.InsertReading(r)) // second insert must not error
 
-	readings, err := store.GetReadings("ELV-001", 0, 2_000_000)
+	readings, err := store.GetReadings("ELV-001", 0, 2_000_000, 0, 1000)
 	require.NoError(t, err)
 	assert.Len(t, readings, 1) // only one row
 }
@@ -147,11 +147,38 @@ func TestGetReadings_ReturnsOnlyWithinRange(t *testing.T) {
 		}))
 	}
 
-	readings, err := store.GetReadings("ELV-001", 500, 1000)
+	readings, err := store.GetReadings("ELV-001", 500, 1000, 0, 1000)
 	require.NoError(t, err)
 	require.Len(t, readings, 2)
 	assert.Equal(t, int64(500), readings[0].TimestampMs)
 	assert.Equal(t, int64(1000), readings[1].TimestampMs)
+}
+
+func TestGetReadings_PaginationCursor(t *testing.T) {
+	store := testDB(t)
+	seedDevice(t, store)
+
+	for _, ts := range []int64{100, 200, 300, 400, 500} {
+		require.NoError(t, store.InsertReading(models.Reading{
+			DeviceID:    "ELV-001",
+			TimestampMs: ts,
+			Inputs:      []models.ReadingInput{{InputName: "current", InputValue: 50}},
+		}))
+	}
+
+	// First page: limit=2, no cursor
+	page1, err := store.GetReadings("ELV-001", 0, 1000, 0, 3)
+	require.NoError(t, err)
+	require.Len(t, page1, 3)
+	assert.Equal(t, int64(100), page1[0].TimestampMs)
+	assert.Equal(t, int64(300), page1[2].TimestampMs)
+
+	// Second page: after=300
+	page2, err := store.GetReadings("ELV-001", 0, 1000, 300, 3)
+	require.NoError(t, err)
+	require.Len(t, page2, 2)
+	assert.Equal(t, int64(400), page2[0].TimestampMs)
+	assert.Equal(t, int64(500), page2[1].TimestampMs)
 }
 
 // --- GetStats ---
