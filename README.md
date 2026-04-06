@@ -8,24 +8,24 @@ A Go service that ingests IoT sensor data from elevators, escalators, and compre
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Startup Sequence                         │
-│                                                                   │
-│  devices.json ──► DeviceRegistry (in-memory map)                 │
-│  sensor_messages.json ──► Ingest ──► Validate ──► Store          │
+│                         Startup Sequence                        │
+│                                                                 │
+│  devices.json ──► DeviceRegistry (in-memory map)                │
+│  sensor_messages.json ──► Ingest ──► Validate ──► Store         │
 └─────────────────────────────────────────────────────────────────┘
 
                     ┌──────────────┐
   sensor_messages   │              │  valid readings
        .json ──────►│   Ingestor   │──────────────────────────────┐
-                    │              │  valid alerts/recoveries       │
-                    └──────┬───────┘                               │
-                           │ malformed / rejected                  │
-                           ▼                                       │
-                        [logger]                                   │
-                                                                   ▼
+                    │              │  valid alerts/recoveries     │
+                    └──────┬───────┘                              │
+                           │ malformed / rejected                 │
+                           ▼                                      │
+                        [logger]                                  │
+                                                                  ▼
                     ┌──────────────┐                    ┌──────────────────┐
   devices.json ────►│  Validator   │◄── device meta     │                  │
-                    │              │                    │   PostgreSQL DB   │
+                    │              │                    │   PostgreSQL DB  │
                     └──────┬───────┘                    │                  │
                            │ flagged / deduplicated     │  devices         │
                            │                            │  readings        │
